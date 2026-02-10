@@ -4,3 +4,14 @@ frontend/.vite/
 backend/.venv/
 __pycache__/
 *.pyc
+dist/
+build/
+.env
+.env.*
+!.env.example
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+*.log
+.DS_Store
