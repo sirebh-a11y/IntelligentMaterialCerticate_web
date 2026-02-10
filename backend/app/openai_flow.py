@@ -389,44 +389,25 @@ JSON output:
 
     _log(logs, "OpenAI PDF upload")
     client = OpenAI(api_key=api_key) if api_key else OpenAI()
-    used_fallback = False
-    if hasattr(client, "responses"):
-        with open(pdf_path, "rb") as f:
-            uploaded = client.files.create(file=f, purpose="user_data")
-        response = client.responses.create(
-            model=OPENAI_MODEL,
-            input=[
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "input_text", "text": prompt},
-                        {"type": "input_file", "file_id": uploaded.id},
-                    ],
-                }
-            ],
-            temperature=0,
-        )
-        _log(logs, "OpenAI PDF parse")
-        raw_txt = response.output_text
-    else:
-        used_fallback = True
-        _log(logs, "OpenAI PDF fallback (text)")
-        import fitz
-        doc = fitz.open(pdf_path)
-        try:
-            pages_text = []
-            for i in range(doc.page_count):
-                pages_text.append(doc[i].get_text("text"))
-            pdf_text = "\n\n".join(pages_text)
-        finally:
-            doc.close()
-        fallback_prompt = f"{prompt}\n\nPDF_TEXT:\n{pdf_text}"
-        response = client.chat.completions.create(
-            model=OPENAI_MODEL,
-            messages=[{"role": "user", "content": fallback_prompt}],
-            temperature=0,
-        )
-        raw_txt = response.choices[0].message.content
+    if not hasattr(client, "responses"):
+        raise Exception("OpenAI PDF file upload not supported by client")
+    with open(pdf_path, "rb") as f:
+        uploaded = client.files.create(file=f, purpose="user_data")
+    response = client.responses.create(
+        model=OPENAI_MODEL,
+        input=[
+            {
+                "role": "user",
+                "content": [
+                    {"type": "input_text", "text": prompt},
+                    {"type": "input_file", "file_id": uploaded.id},
+                ],
+            }
+        ],
+        temperature=0,
+    )
+    _log(logs, "OpenAI PDF parse")
+    raw_txt = response.output_text
     parsed = robust_json_parse(raw_txt)
 
     def _is_empty_value(v):
@@ -451,25 +432,9 @@ JSON output:
         "proprieta_meccaniche",
     ]
 
-    if not used_fallback and all(_is_empty_value(parsed.get(k)) for k in fields_list):
-        _log(logs, "OpenAI PDF empty result, retry text fallback")
-        import fitz
-        doc = fitz.open(pdf_path)
-        try:
-            pages_text = []
-            for i in range(doc.page_count):
-                pages_text.append(doc[i].get_text("text"))
-            pdf_text = "\n\n".join(pages_text)
-        finally:
-            doc.close()
-        fallback_prompt = f"{prompt}\n\nPDF_TEXT:\n{pdf_text}"
-        response = client.chat.completions.create(
-            model=OPENAI_MODEL,
-            messages=[{"role": "user", "content": fallback_prompt}],
-            temperature=0,
-        )
-        raw_txt = response.choices[0].message.content
-        parsed = robust_json_parse(raw_txt)
+    if all(_is_empty_value(parsed.get(k)) for k in fields_list):
+        _log(logs, "OpenAI PDF empty result (file upload)")
+        raise Exception("OpenAI PDF returned empty fields")
 
     def _flatten_value(v):
         out = []
