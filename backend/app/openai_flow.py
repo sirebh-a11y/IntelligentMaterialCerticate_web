@@ -389,6 +389,7 @@ JSON output:
 
     _log(logs, "OpenAI PDF upload")
     client = OpenAI(api_key=api_key) if api_key else OpenAI()
+    used_fallback = False
     if hasattr(client, "responses"):
         with open(pdf_path, "rb") as f:
             uploaded = client.files.create(file=f, purpose="user_data")
@@ -408,6 +409,7 @@ JSON output:
         _log(logs, "OpenAI PDF parse")
         raw_txt = response.output_text
     else:
+        used_fallback = True
         _log(logs, "OpenAI PDF fallback (text)")
         import fitz
         doc = fitz.open(pdf_path)
@@ -426,6 +428,48 @@ JSON output:
         )
         raw_txt = response.choices[0].message.content
     parsed = robust_json_parse(raw_txt)
+
+    def _is_empty_value(v):
+        if v is None:
+            return True
+        if isinstance(v, str):
+            return not v.strip()
+        if isinstance(v, (list, tuple, set)):
+            return len(v) == 0
+        if isinstance(v, dict):
+            if not v:
+                return True
+            return all(_is_empty_value(x) for x in v.values())
+        return False
+
+    fields_list = [
+        "azienda",
+        "data_certificato",
+        "materiale",
+        "trattamento_termico",
+        "composizione_chimica",
+        "proprieta_meccaniche",
+    ]
+
+    if not used_fallback and all(_is_empty_value(parsed.get(k)) for k in fields_list):
+        _log(logs, "OpenAI PDF empty result, retry text fallback")
+        import fitz
+        doc = fitz.open(pdf_path)
+        try:
+            pages_text = []
+            for i in range(doc.page_count):
+                pages_text.append(doc[i].get_text("text"))
+            pdf_text = "\n\n".join(pages_text)
+        finally:
+            doc.close()
+        fallback_prompt = f"{prompt}\n\nPDF_TEXT:\n{pdf_text}"
+        response = client.chat.completions.create(
+            model=OPENAI_MODEL,
+            messages=[{"role": "user", "content": fallback_prompt}],
+            temperature=0,
+        )
+        raw_txt = response.choices[0].message.content
+        parsed = robust_json_parse(raw_txt)
 
     def _flatten_value(v):
         out = []
@@ -558,15 +602,6 @@ JSON output:
             if tks:
                 return {page_idx: tks}
         return {}
-
-    fields_list = [
-        "azienda",
-        "data_certificato",
-        "materiale",
-        "trattamento_termico",
-        "composizione_chimica",
-        "proprieta_meccaniche",
-    ]
 
     final_fields = {}
     for k in fields_list:

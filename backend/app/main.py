@@ -108,7 +108,7 @@ def delete_pdf(pdf_name: str):
 def get_pdf_pages(pdf_name: str):
     try:
         import fitz
-        doc = fitz.open(f"{PDF_FOLDER}\\{pdf_name}")
+        doc = fitz.open(os.path.join(PDF_FOLDER, pdf_name))
         try:
             return {"pages": doc.page_count}
         finally:
@@ -200,6 +200,8 @@ def ai_pdf(payload: dict, x_openai_key: str = Header(default=None, alias="X-Open
     try:
         return openai_pdf(pdf_name, cache=PDF_CACHE, api_key=x_openai_key)
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"AI pdf failed: {e}")
 
 

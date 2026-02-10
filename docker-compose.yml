@@ -17,21 +17,28 @@ services:
     container_name: cert_api
     environment:
       DATABASE_URL: postgresql://cert_user:cert_pass@db:5432/certdb
+      TESSERACT_CMD: /usr/bin/tesseract
     ports:
       - "8000:8000"
     depends_on:
       - db
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health').read()"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
 
   frontend:
     build:
       context: ./frontend
     container_name: cert_frontend
     environment:
-      VITE_API_URL: http://localhost:8000
+      VITE_API_URL: http://api:8000
     ports:
       - "5173:5173"
     depends_on:
-      - api
+      api:
+        condition: service_healthy
 
 volumes:
   cert_pgdata:
