@@ -1,0 +1,14 @@
+fastapi==0.115.0
+uvicorn[standard]==0.30.6
+python-multipart==0.0.9
+pillow==10.4.0
+pdf2image==1.17.0
+pymupdf==1.24.9
+pytesseract==0.3.13
+numpy==1.26.4
+openai==1.40.6
+httpx==0.27.2
+transformers==4.44.2
+torch==2.4.0
+demjson3==3.0.6
+opencv-python-headless==4.10.0.84
