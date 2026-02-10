@@ -20,6 +20,21 @@ docker compose down
 - I PDF vengono caricati e salvati sul backend.
 - Per usare OpenAI, inserisci la **API key** nel campo “OpenAI Key” dell’interfaccia.
 
+## Troubleshooting (problemi già visti)
+- **La pagina non parte / vite: not found**
+  - Ricostruisci le immagini: `docker compose down` → `docker compose up --build`.
+  - Il container frontend avvia Vite direttamente con `node` (già configurato).
+- **Proxy error /api/* (ECONNREFUSED)**
+  - Aspetta che l’API sia “healthy”: il compose ora attende l’healthcheck.
+  - Riavvia: `docker compose down` → `docker compose up --build`.
+- **Rettangoli assenti / tokens 500**
+  - Nel container serve Tesseract. È già installato in Dockerfile e `TESSERACT_CMD=/usr/bin/tesseract`.
+  - Ricostruisci dopo modifiche: `docker compose up --build`.
+- **PDF pages = 0 in Docker**
+  - In Linux i path Windows non funzionano. Il backend usa `os.path.join` (già fixato).
+- **Build molto lento**
+  - È normale: i pacchetti ML (torch) sono enormi. Il primo build può richiedere molti minuti.
+
 ## Avvio locale (senza Docker)
 Backend:
 ```powershell
