@@ -433,8 +433,15 @@ JSON output:
     ]
 
     if all(_is_empty_value(parsed.get(k)) for k in fields_list):
-        _log(logs, "OpenAI PDF empty result (file upload)")
-        raise Exception("OpenAI PDF returned empty fields")
+        _log(logs, "OpenAI PDF empty result (file upload) -> fallback to OpenAI Full")
+        full = openai_full(pdf_name, cache=cache, api_key=api_key)
+        full_logs = full.get("logs") or []
+        return {
+            "fields": full.get("fields"),
+            "table_hints": full.get("table_hints"),
+            "prompt": full.get("prompt"),
+            "logs": logs + full_logs,
+        }
 
     def _flatten_value(v):
         out = []
