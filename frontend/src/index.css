@@ -2,6 +2,12 @@
   box-sizing: border-box;
 }
 
+html,
+body,
+#root {
+  height: 100%;
+}
+
 body {
   margin: 0;
   font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
@@ -11,12 +17,13 @@ body {
 }
 
 .app {
-  min-height: 100vh;
+  height: 100vh;
   display: grid;
   grid-template-rows: auto auto 1fr;
   gap: 12px;
   padding: 16px;
   position: relative;
+  overflow: hidden;
 }
 
 .topbar {
@@ -104,7 +111,8 @@ body {
   display: flex;
   flex-direction: column;
   gap: 6px;
-  max-height: 200px;
+  flex: 0 0 240px;
+  min-height: 240px;
   overflow: auto;
 }
 
@@ -193,7 +201,10 @@ body {
 }
 
 .viewer-area {
+  display: flex;
+  flex-direction: column;
   min-width: 0;
+  min-height: 0;
 }
 
 .sidebar {
@@ -204,7 +215,10 @@ body {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  overflow: auto;
+  height: 100%;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
 }
 
 .panel-title {
@@ -372,6 +386,7 @@ body {
 }
 
 .viewer {
+  flex: 1 1 auto;
   background: white;
   border: 1px solid #e0e6eb;
   border-radius: 8px;
