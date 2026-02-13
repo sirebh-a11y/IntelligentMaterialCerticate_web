@@ -15,7 +15,7 @@ TESSERACT_CMD = os.environ.get(
 )
 
 
-OPENAI_MODEL = "gpt-5.1"
+OPENAI_MODEL = "gpt-5.2"
 
 
 def ensure_dirs() -> None:

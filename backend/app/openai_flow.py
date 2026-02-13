@@ -369,22 +369,90 @@ def openai_pdf(pdf_name: str, cache: Dict[str, Any] = None, api_key: str = None)
         raise Exception("PDF not found")
 
     prompt = """
-You are a field extractor for certificates (PDF attached). Do not invent.
-Rules:
-- Use ONLY info present in the PDF.
-- Output JSON only.
-- If a field does not exist, use null.
-- Do not reformat or normalize values.
+You are a strict information extractor for material certificates (PDF attached).
 
-JSON output:
+CRITICAL RULES:
+- Use ONLY information explicitly visible in the PDF.
+- NEVER invent, infer, calculate, normalize, translate, reformat, or correct values.
+- NEVER reconstruct broken numbers.
+- NEVER merge separate numeric fragments.
+- Copy values EXACTLY as they appear in the PDF (same characters, same decimal separators, same spacing, same units).
+- Every numeric value you output MUST appear verbatim in the PDF.
+- If an exact match is not clearly visible, return null.
+- If uncertain, return null.
+- Return JSON only. No explanations.
+
+STRICT VALIDATION STEP (MANDATORY):
+Before returning the JSON:
+- Verify that each numeric value exists exactly as written in the PDF.
+- If any numeric value does not appear exactly in the document, replace it with null.
+- Do NOT attempt to "fix" OCR mistakes.
+- Do NOT guess missing decimals.
+- Do NOT interpret ambiguous characters (e.g. 0/O, 1/I, comma/dot).
+
+OUTPUT JSON SCHEMA:
+
 {
   "azienda": null,
   "data_certificato": null,
   "materiale": null,
   "trattamento_termico": null,
-  "composizione_chimica": null,
-  "proprieta_meccaniche": null
+  "composizione_chimica": [
+    {
+      "elemento": "",
+      "valore": "",
+      "evidence": ""
+    }
+  ],
+  "proprieta_meccaniche": [
+    {
+      "proprieta": "",
+      "valore": "",
+      "evidence": ""
+    }
+  ]
 }
+
+FIELD RULES:
+
+AZIENDA:
+- Copy the company name exactly as written.
+
+DATA_CERTIFICATO:
+- Copy the date exactly as written.
+- Do NOT convert format.
+
+MATERIALE:
+- Copy the material designation exactly as written.
+- Do NOT combine fields unless they appear together.
+
+TRATTAMENTO_TERMICO:
+- Copy only the explicit temper or heat treatment designation.
+- Do NOT infer from standards.
+
+COMPOSIZIONE_CHIMICA:
+- Extract only measured/actual chemical values.
+- Ignore min/max/specification limits unless no measured values exist.
+- Keep rows separate.
+- Do NOT create new rows.
+- For each row:
+  - "elemento" must match exactly as written.
+  - "valore" must match exactly as written.
+  - "evidence" must contain the exact numeric substring copied.
+
+- If chemical composition is not present, return [].
+
+PROPRIETA_MECCANICHE:
+- Extract only measured/test results.
+- Do NOT summarize.
+- Do NOT average multiple samples.
+- Do NOT combine samples.
+- Each measured result must be a separate object.
+- Copy the property name exactly as written.
+- Copy the value exactly as written.
+- Include the exact numeric substring in "evidence".
+
+If a section is missing, use null (or [] for arrays).
 """.strip()
 
     _log(logs, "OpenAI PDF upload")
@@ -409,6 +477,10 @@ JSON output:
     _log(logs, "OpenAI PDF parse")
     raw_txt = response.output_text
     parsed = robust_json_parse(raw_txt)
+    try:
+        ai_raw = json.loads(json.dumps(parsed))
+    except Exception:
+        ai_raw = parsed
 
     def _is_empty_value(v):
         if v is None:
@@ -433,15 +505,8 @@ JSON output:
     ]
 
     if all(_is_empty_value(parsed.get(k)) for k in fields_list):
-        _log(logs, "OpenAI PDF empty result (file upload) -> fallback to OpenAI Full")
-        full = openai_full(pdf_name, cache=cache, api_key=api_key)
-        full_logs = full.get("logs") or []
-        return {
-            "fields": full.get("fields"),
-            "table_hints": full.get("table_hints"),
-            "prompt": full.get("prompt"),
-            "logs": logs + full_logs,
-        }
+        _log(logs, "OpenAI PDF empty result (fallback disabled)")
+        raise Exception("OpenAI PDF returned empty result (fallback disabled)")
 
     def _flatten_value(v):
         out = []
@@ -471,6 +536,47 @@ JSON output:
             pass
         return out
 
+    def _parse_chem_rows(v):
+        src = v
+        if src is None:
+            return []
+        if isinstance(src, str):
+            try:
+                src = json.loads(src)
+            except Exception:
+                return []
+        rows = []
+        if isinstance(src, list):
+            for item in src:
+                if not isinstance(item, dict):
+                    continue
+                el = item.get("elemento")
+                val = item.get("valore")
+                el_txt = el.strip() if isinstance(el, str) else (str(el).strip() if el is not None else "")
+                if not el_txt:
+                    continue
+                if val is None:
+                    val_txt = None
+                elif isinstance(val, str):
+                    val_txt = val.strip() or None
+                else:
+                    val_txt = str(val).strip() or None
+                rows.append({"elemento": el_txt, "valore": val_txt})
+            return rows
+        if isinstance(src, dict):
+            for k, val in src.items():
+                el_txt = str(k).strip()
+                if not el_txt:
+                    continue
+                if val is None:
+                    val_txt = None
+                elif isinstance(val, str):
+                    val_txt = val.strip() or None
+                else:
+                    val_txt = str(val).strip() or None
+                rows.append({"elemento": el_txt, "valore": val_txt})
+        return rows
+
     def _value_to_text(v):
         if v is None:
             return None
@@ -494,6 +600,108 @@ JSON output:
             if tks:
                 selected[page_idx] = tks
         return selected
+
+    def _exists_in_tokens(tokens_sorted, text):
+        if text is None:
+            return True
+        txt = str(text).strip()
+        if not txt:
+            return False
+        if find_multitoken_sequence(tokens_sorted, txt, max_window=80):
+            return True
+        if find_single_token(tokens_sorted, txt):
+            return True
+        n_txt = normalize_text(txt)
+        if not n_txt:
+            return False
+        for t in tokens_sorted:
+            if normalize_text(t["text"]) == n_txt:
+                return True
+        return False
+
+    def _line_clusters(tokens_sorted):
+        if not tokens_sorted:
+            return []
+        heights = [max(1, (t["bbox"][3] - t["bbox"][1])) for t in tokens_sorted]
+        avg_h = sum(heights) / max(1, len(heights))
+        y_tol = max(4, int(avg_h * 0.45))
+        clusters = []
+        for t in tokens_sorted:
+            cy = (t["bbox"][1] + t["bbox"][3]) / 2.0
+            placed = False
+            for c in clusters:
+                if abs(c["cy"] - cy) <= y_tol:
+                    c["tokens"].append(t)
+                    c["sum_cy"] += cy
+                    c["count"] += 1
+                    c["cy"] = c["sum_cy"] / c["count"]
+                    placed = True
+                    break
+            if not placed:
+                clusters.append({"cy": cy, "sum_cy": cy, "count": 1, "tokens": [t]})
+        out = []
+        for c in clusters:
+            line_toks = sorted(c["tokens"], key=lambda x: (x["bbox"][0], x["bbox"][1]))
+            out.append(line_toks)
+        out.sort(key=lambda line: (sum((t["bbox"][1] + t["bbox"][3]) / 2.0 for t in line) / max(1, len(line))))
+        return out
+
+    def _pair_in_same_line(tokens_sorted, elemento, valore):
+        if not elemento:
+            return False
+        lines = _line_clusters(tokens_sorted)
+        for line in lines:
+            if not _exists_in_tokens(line, elemento):
+                continue
+            if valore is None:
+                return True
+            line_text = " ".join(str(t.get("text", "")) for t in line)
+            value_text = str(valore).strip()
+            if not value_text:
+                return True
+            if value_text in line_text:
+                return True
+            # Numeric-like values must match more strictly to avoid hallucinated defaults.
+            norm_line = normalize_text(line_text).replace(",", ".")
+            norm_value = normalize_text(value_text).replace(",", ".")
+            if norm_value and norm_value in norm_line:
+                return True
+        return False
+
+    raw_chem_rows = _parse_chem_rows(parsed.get("composizione_chimica"))
+    if raw_chem_rows:
+        chem_scope = _select_table_tokens("composizione_chimica")
+        validated_chem_rows = []
+        for row in raw_chem_rows:
+            is_valid = False
+            for page_idx, toks in chem_scope.items():
+                toks_sorted = sorted(toks, key=_reading_order_key)
+                if _pair_in_same_line(toks_sorted, row["elemento"], row["valore"]):
+                    is_valid = True
+                    break
+            if is_valid:
+                validated_chem_rows.append(row)
+        _log(
+            logs,
+            f"Chem rows validated: {len(validated_chem_rows)}/{len(raw_chem_rows)}",
+        )
+        parsed["composizione_chimica"] = validated_chem_rows
+    elif parsed.get("composizione_chimica") is not None:
+        parsed["composizione_chimica"] = []
+
+    mech_value = parsed.get("proprieta_meccaniche")
+    if isinstance(mech_value, str) and mech_value.strip():
+        mech_scope = _select_table_tokens("proprieta_meccaniche")
+        mech_lines = []
+        for _, toks in mech_scope.items():
+            toks_sorted = sorted(toks, key=_reading_order_key)
+            mech_lines.append(" ".join(str(t.get("text", "")) for t in toks_sorted))
+        mech_text = " ".join(mech_lines)
+        mech_norm = normalize_text(mech_text)
+        candidate_norm = normalize_text(mech_value)
+        if candidate_norm and mech_norm and candidate_norm not in mech_norm:
+            _log(logs, "Mechanical text not grounded in table tokens -> set to null")
+            parsed["proprieta_meccaniche"] = None
 
     def _token_eq(token_text, target_word):
         tn = normalize_text(token_text)
@@ -625,7 +833,7 @@ JSON output:
             "tokens_by_page": tokens_by_page_list,
         }
 
-    return {"fields": final_fields, "prompt": prompt, "logs": logs}
+    return {"fields": final_fields, "prompt": prompt, "logs": logs, "ai_raw": ai_raw}
 
 
 def openai_refine(pdf_name: str, current_fields: Dict[str, Any], table_hints: Dict[str, Any], cache: Dict[str, Any] = None, api_key: str = None):
