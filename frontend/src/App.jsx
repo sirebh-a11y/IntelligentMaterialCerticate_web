@@ -794,6 +794,29 @@ export default function App() {
       next[k] = v && v.text ? v.text : "";
     });
     setFields(next);
+
+    const chemText = resultFields.composizione_chimica?.text;
+    if (chemText === undefined || chemText === null || chemText === "") {
+      return;
+    }
+    let parsedRows = [];
+    try {
+      const src = typeof chemText === "string" ? JSON.parse(chemText) : chemText;
+      if (Array.isArray(src)) {
+        parsedRows = src
+          .map((row) => {
+            if (!row || typeof row !== "object") return null;
+            const elemento = String(row.elemento ?? "").trim();
+            const valore = String(row.valore ?? row.evidence ?? "").trim();
+            if (!elemento && !valore) return null;
+            return { elemento, valore, token_ids: { el: [], val: [] } };
+          })
+          .filter(Boolean);
+      }
+    } catch {
+      parsedRows = [];
+    }
+    setChemRows(parsedRows);
   };
 
   const runAIFull = () => {

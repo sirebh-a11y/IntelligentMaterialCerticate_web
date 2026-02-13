@@ -439,7 +439,6 @@ COMPOSIZIONE_CHIMICA:
   - "elemento" must match exactly as written.
   - "valore" must match exactly as written.
   - "evidence" must contain the exact numeric substring copied.
-
 - If chemical composition is not present, return [].
 
 PROPRIETA_MECCANICHE:
@@ -452,7 +451,30 @@ PROPRIETA_MECCANICHE:
 - Copy the value exactly as written.
 - Include the exact numeric substring in "evidence".
 
-If a section is missing, use null (or [] for arrays).
+ADDITIONAL STRICT ROLE CONSTRAINT FOR AZIENDA (DO NOT OVERRIDE ABOVE RULES):
+
+- "azienda" MUST be the certificate issuer / material manufacturer.
+- It MUST correspond to the company that issues or signs the certificate.
+- It is typically located in the document header together with the full company address.
+- It is NOT the customer, buyer, consignee, or order reference.
+
+- Explicitly EXCLUDE companies appearing under labels such as:
+  Customer
+  Sold To
+  Ship To
+  Buyer
+  Order Reference
+  Consignee
+  Delivery Address
+
+- The company name "Forgialluminio" MUST NEVER be selected as "azienda".
+  If present, treat it as a customer or commercial party and ignore it.
+
+- If multiple companies appear:
+  Select ONLY the company acting as certificate issuer.
+  NEVER select the customer.
+
+- If the issuer role is not clearly identifiable, return null.
 """.strip()
 
     _log(logs, "OpenAI PDF upload")
@@ -552,16 +574,29 @@ If a section is missing, use null (or [] for arrays).
                     continue
                 el = item.get("elemento")
                 val = item.get("valore")
+                ev = item.get("evidence")
                 el_txt = el.strip() if isinstance(el, str) else (str(el).strip() if el is not None else "")
                 if not el_txt:
                     continue
                 if val is None:
-                    val_txt = None
+                    if isinstance(ev, str) and ev.strip():
+                        val_txt = ev.strip()
+                    elif ev is not None:
+                        ev_s = str(ev).strip()
+                        val_txt = ev_s if ev_s else None
+                    else:
+                        val_txt = None
                 elif isinstance(val, str):
                     val_txt = val.strip() or None
                 else:
                     val_txt = str(val).strip() or None
-                rows.append({"elemento": el_txt, "valore": val_txt})
+                if isinstance(ev, str):
+                    ev_txt = ev.strip() or None
+                elif ev is None:
+                    ev_txt = None
+                else:
+                    ev_txt = str(ev).strip() or None
+                rows.append({"elemento": el_txt, "valore": val_txt, "evidence": ev_txt})
             return rows
         if isinstance(src, dict):
             for k, val in src.items():
@@ -574,7 +609,7 @@ If a section is missing, use null (or [] for arrays).
                     val_txt = val.strip() or None
                 else:
                     val_txt = str(val).strip() or None
-                rows.append({"elemento": el_txt, "valore": val_txt})
+                rows.append({"elemento": el_txt, "valore": val_txt, "evidence": None})
         return rows
 
     def _value_to_text(v):
@@ -666,25 +701,85 @@ If a section is missing, use null (or [] for arrays).
             norm_value = normalize_text(value_text).replace(",", ".")
             if norm_value and norm_value in norm_line:
                 return True
+        # Fallback: some certificates have elements on one row and values on a different row
+        # but aligned by column.
+        if valore is None:
+            return False
+        elem_norm = normalize_text(str(elemento).strip())
+        val_raw = str(valore).strip()
+        if not elem_norm or not val_raw:
+            return False
+        val_norm = normalize_text(val_raw).replace(",", ".")
+
+        elem_tokens = []
+        val_tokens = []
+        for t in tokens_sorted:
+            t_text = str(t.get("text", ""))
+            t_norm = normalize_text(t_text)
+            if t_norm == elem_norm or (elem_norm in t_norm and len(elem_norm) >= 2):
+                elem_tokens.append(t)
+            t_norm_num = t_norm.replace(",", ".")
+            if val_raw == t_text or (val_norm and val_norm in t_norm_num):
+                val_tokens.append(t)
+
+        if not elem_tokens or not val_tokens:
+            return False
+
+        for et in elem_tokens:
+            ex0, ey0, ex1, ey1 = et["bbox"]
+            ecx = (ex0 + ex1) / 2.0
+            ecy = (ey0 + ey1) / 2.0
+            ew = max(1.0, ex1 - ex0)
+            for vt in val_tokens:
+                vx0, vy0, vx1, vy1 = vt["bbox"]
+                vcx = (vx0 + vx1) / 2.0
+                vcy = (vy0 + vy1) / 2.0
+                vw = max(1.0, vx1 - vx0)
+                # Column alignment with reasonable x tolerance; value can be below/above element.
+                x_tol = max(18.0, 0.8 * max(ew, vw))
+                if abs(vcx - ecx) <= x_tol and abs(vcy - ecy) > 2.0:
+                    return True
         return False
 
     raw_chem_rows = _parse_chem_rows(parsed.get("composizione_chimica"))
     if raw_chem_rows:
         chem_scope = _select_table_tokens("composizione_chimica")
         validated_chem_rows = []
+        dropped_elements = []
         for row in raw_chem_rows:
             is_valid = False
+            row_value = row.get("valore")
+            row_evidence = row.get("evidence")
             for page_idx, toks in chem_scope.items():
                 toks_sorted = sorted(toks, key=_reading_order_key)
-                if _pair_in_same_line(toks_sorted, row["elemento"], row["valore"]):
+                if _pair_in_same_line(toks_sorted, row["elemento"], row_value):
                     is_valid = True
                     break
+                if row_evidence and _pair_in_same_line(toks_sorted, row["elemento"], row_evidence):
+                    is_valid = True
+                    break
+            # Fallback: table scope can miss the last columns/rows on some certificates.
+            # If strict table-scope validation fails, validate against full-page tokens.
+            if not is_valid:
+                for page_idx, toks_sorted in page_tokens_sorted.items():
+                    if _pair_in_same_line(toks_sorted, row["elemento"], row_value):
+                        is_valid = True
+                        break
+                    if row_evidence and _pair_in_same_line(toks_sorted, row["elemento"], row_evidence):
+                        is_valid = True
+                        break
             if is_valid:
-                validated_chem_rows.append(row)
+                validated_chem_rows.append(
+                    {"elemento": row["elemento"], "valore": row_value}
+                )
+            else:
+                dropped_elements.append(row.get("elemento") or "?")
         _log(
             logs,
             f"Chem rows validated: {len(validated_chem_rows)}/{len(raw_chem_rows)}",
         )
+        if dropped_elements:
+            _log(logs, f"Chem rows dropped: {', '.join(dropped_elements)}")
         parsed["composizione_chimica"] = validated_chem_rows
     elif parsed.get("composizione_chimica") is not None:
         parsed["composizione_chimica"] = []
