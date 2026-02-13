@@ -40,6 +40,7 @@ export default function App() {
   const [openaiPrimaryFields, setOpenaiPrimaryFields] = useState(null);
   const [lastPrompt, setLastPrompt] = useState("");
   const [lastPromptTitle, setLastPromptTitle] = useState("");
+  const [lastAiRaw, setLastAiRaw] = useState("");
   const [promptLog, setPromptLog] = useState([]);
   const [statusLog, setStatusLog] = useState([]);
   const [chemRows, setChemRows] = useState([]);
@@ -350,6 +351,7 @@ export default function App() {
     setOpenaiPrimaryFields(null);
     setLastPrompt("");
     setLastPromptTitle("");
+    setLastAiRaw("");
     setPromptLog([]);
     setStatusLog([]);
     setUsedTokenIds([]);
@@ -525,25 +527,41 @@ export default function App() {
     return Array.from(ids);
   }, [aiTokenIds, usedTokenIds, validatedTokenIds]);
 
+  const getOverlayGeometry = () => {
+    const imgEl = imgRef.current;
+    if (!imgEl) return null;
+    const baseW = tokenImageSize.width || imgEl.naturalWidth || imgMeta.naturalW;
+    const baseH = tokenImageSize.height || imgEl.naturalHeight || imgMeta.naturalH;
+    if (!baseW || !baseH) return null;
+    const displayW = imgEl.clientWidth || baseW * zoom;
+    const displayH = imgEl.clientHeight || baseH * zoom;
+    if (!displayW || !displayH) return null;
+    return {
+      baseW,
+      baseH,
+      displayW,
+      displayH,
+      sx: displayW / baseW,
+      sy: displayH / baseH,
+    };
+  };
+
   const drawOverlay = () => {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const ctx = canvas.getContext("2d");
     const imgEl = imgRef.current;
     if (imgEl && !imgEl.complete) return;
-    const naturalW = tokenImageSize.width || imgMeta.naturalW;
-    const naturalH = tokenImageSize.height || imgMeta.naturalH;
-    const displayW = naturalW * zoom;
-    const displayH = naturalH * zoom;
-    if (!naturalW || !naturalH || !displayW || !displayH) return;
-    canvas.width = displayW;
-    canvas.height = displayH;
-    canvas.style.width = `${displayW}px`;
-    canvas.style.height = `${displayH}px`;
+    const geo = getOverlayGeometry();
+    if (!geo) return;
+    const { displayW, displayH, sx, sy } = geo;
+    const dpr = window.devicePixelRatio || 1;
+    canvas.width = Math.round(displayW * dpr);
+    canvas.height = Math.round(displayH * dpr);
+    canvas.style.width = `${Math.round(displayW)}px`;
+    canvas.style.height = `${Math.round(displayH)}px`;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, displayW, displayH);
-
-    const sx = zoom;
-    const sy = zoom;
 
     // draw tokens (default red)
     ctx.strokeStyle = "rgba(220, 38, 38, 0.7)";
@@ -643,18 +661,14 @@ export default function App() {
 
   const onMouseUp = (evt) => {
     isDraggingRef.current = false;
+    const geo = getOverlayGeometry();
+    if (!geo) return;
+    const { sx, sy } = geo;
     if (!dragMovedRef.current) {
       // click: toggle exclude in delete mode
-      const naturalW = tokenImageSize.width || imgMeta.naturalW;
-      const naturalH = tokenImageSize.height || imgMeta.naturalH;
-      const displayW = naturalW * zoom;
-      const displayH = naturalH * zoom;
-      if (!naturalW || !naturalH || !displayW || !displayH) return;
       const { x, y } = toCanvasPoint(evt);
-      const sx = naturalW / displayW;
-      const sy = naturalH / displayH;
-      const px = x * sx;
-      const py = y * sy;
+      const px = x / sx;
+      const py = y / sy;
       const hit = tokens.find((t) => {
         const [x0, y0, x1, y1] = t.bbox;
         return px >= x0 && px <= x1 && py >= y0 && py <= y1;
@@ -667,18 +681,11 @@ export default function App() {
       return;
     }
     if (!selection || tokens.length === 0) return;
-    const naturalW = tokenImageSize.width || imgMeta.naturalW;
-    const naturalH = tokenImageSize.height || imgMeta.naturalH;
-    const displayW = naturalW * zoom;
-    const displayH = naturalH * zoom;
-    if (!naturalW || !naturalH || !displayW || !displayH) return;
-    const sx = naturalW / displayW;
-    const sy = naturalH / displayH;
     const sel = {
-      x0: selection.x0 * sx,
-      y0: selection.y0 * sy,
-      x1: selection.x1 * sx,
-      y1: selection.y1 * sy,
+      x0: selection.x0 / sx,
+      y0: selection.y0 / sy,
+      x1: selection.x1 / sx,
+      y1: selection.y1 / sy,
     };
     const picked = tokens
       .filter((t) => {
@@ -811,6 +818,7 @@ export default function App() {
       })
       .then((data) => {
         if (selectedPdf !== currentPdf) return;
+        setRawAiResponse(data);
         applyFieldsFromResult(data.fields);
         setTableHints(data.table_hints || {});
         setOpenaiPrimaryFields(data.fields || null);
@@ -851,6 +859,7 @@ export default function App() {
       })
       .then((data) => {
         if (selectedPdf !== currentPdf) return;
+        setRawAiResponse(data);
         applyFieldsFromResult(data.fields);
         setLastPrompt(data.prompt || "");
         setLastPromptTitle("OpenAI PDF Prompt");
@@ -893,6 +902,7 @@ export default function App() {
       })
       .then((data) => {
         if (selectedPdf !== currentPdf) return;
+        setRawAiResponse(data);
         applyFieldsFromResult(data.fields);
         setLastPrompt(data.prompt || "");
         setLastPromptTitle("OpenAI Refine Prompt");
@@ -931,6 +941,7 @@ export default function App() {
       })
       .then((data) => {
         if (selectedPdf !== currentPdf) return;
+        setRawAiResponse(data);
         applyFieldsFromResult(data.fields);
         setLastPrompt("");
         setLastPromptTitle("");
@@ -946,6 +957,19 @@ export default function App() {
   const restorePrimary = () => {
     if (!openaiPrimaryFields) return;
     applyFieldsFromResult(openaiPrimaryFields);
+  };
+
+  const setRawAiResponse = (data) => {
+    const raw = data?.ai_raw;
+    if (raw === undefined) {
+      setLastAiRaw("");
+      return;
+    }
+    try {
+      setLastAiRaw(JSON.stringify(raw, null, 2));
+    } catch {
+      setLastAiRaw(String(raw ?? ""));
+    }
   };
 
   const runChemExtract = () => {
@@ -1223,25 +1247,20 @@ export default function App() {
             <button className={mode === "delete" ? "active" : ""} onClick={() => setMode("delete")}>
               Elimina
             </button>
-            <button className={mode === "catch" ? "active" : ""} onClick={() => setMode("catch")}>
-              Catch
-            </button>
-            <button className={mode === "pick_el" ? "active" : ""} onClick={() => setMode("pick_el")}>
-              Pick Elemento
-            </button>
-            <button className={mode === "pick_val" ? "active" : ""} onClick={() => setMode("pick_val")}>
-              Pick Valore
-            </button>
           </div>
-          {Object.keys(fields).map((k) => (
-            <button
-              key={k}
-              className={`field-btn ${activeField === k ? "active" : ""}`}
-              onClick={() => setActiveField(k)}
-            >
-              {k}
-            </button>
-          ))}
+          <div className="field-grid">
+            {Object.keys(fields).map((k) => (
+              <div key={k} className={`field-card ${activeField === k ? "active" : ""}`}>
+                <button
+                  className="field-btn"
+                  onClick={() => setActiveField(k)}
+                >
+                  {k}
+                </button>
+                <textarea value={fields[k] || ""} readOnly />
+              </div>
+            ))}
+          </div>
 
           <div className="field-actions">
             <button onClick={applySelectionToField} disabled={selectedTokenIds.length === 0}>
@@ -1253,63 +1272,50 @@ export default function App() {
             </button>
           </div>
 
-          {activeField === "composizione_chimica" ? (
-            <div className="chem-editor">
-              <div className="label">Tabella Chimica</div>
-              <div className="mode-row">
-                <button
-                  className={mode === "select" ? "active" : ""}
-                  onClick={() => setMode("select")}
-                >
-                  Select
-                </button>
-                <button
-                  className={mode === "pick_el" ? "active" : ""}
-                  onClick={() => setMode("pick_el")}
-                >
-                  Pick Elemento
-                </button>
-                <button
-                  className={mode === "pick_val" ? "active" : ""}
-                  onClick={() => setMode("pick_val")}
-                >
-                  Pick Valore
-                </button>
-              </div>
-              <div className="chem-inputs">
-                <input
-                  placeholder="Elemento"
-                  value={chemEl}
-                  onChange={(e) => setChemEl(e.target.value)}
-                />
-                <input
-                  placeholder="Valore"
-                  value={chemVal}
-                  onChange={(e) => setChemVal(e.target.value)}
-                />
-                <button onClick={addChemRow}>Add</button>
-              </div>
-              <div className="chem-rows">
-                {chemRows.map((r, idx) => (
-                  <div key={`${r.elemento}-${idx}`} className="chem-row">
-                    <input
-                      value={r.elemento || ""}
-                      onChange={(e) => updateChemRow(idx, "elemento", e.target.value)}
-                    />
-                    <input
-                      value={r.valore || ""}
-                      onChange={(e) => updateChemRow(idx, "valore", e.target.value)}
-                    />
-                    <button onClick={() => removeChemRow(idx)}>Del</button>
-                  </div>
-                ))}
-              </div>
+          <div className="chem-editor">
+            <div className="label">Tabella Chimica</div>
+            <div className="mode-row">
+              <button
+                className={mode === "pick_el" ? "active" : ""}
+                onClick={() => setMode("pick_el")}
+              >
+                Pick Elemento
+              </button>
+              <button
+                className={mode === "pick_val" ? "active" : ""}
+                onClick={() => setMode("pick_val")}
+              >
+                Pick Valore
+              </button>
             </div>
-          ) : null}
-
-          <div className="field-value">
-            <div className="label">Valore</div>
-            <textarea value={fields[activeField]} readOnly />
+            <div className="chem-inputs">
+              <input
+                placeholder="Elemento"
+                value={chemEl}
+                onChange={(e) => setChemEl(e.target.value)}
+              />
+              <input
+                placeholder="Valore"
+                value={chemVal}
+                onChange={(e) => setChemVal(e.target.value)}
+              />
+              <button onClick={addChemRow}>Add</button>
+            </div>
+            <div className="chem-rows">
+              {chemRows.map((r, idx) => (
+                <div key={`${r.elemento}-${idx}`} className="chem-row">
+                  <input
+                    value={r.elemento || ""}
+                    onChange={(e) => updateChemRow(idx, "elemento", e.target.value)}
+                  />
+                  <input
+                    value={r.valore || ""}
+                    onChange={(e) => updateChemRow(idx, "valore", e.target.value)}
+                  />
+                  <button onClick={() => removeChemRow(idx)}>Del</button>
+                </div>
+              ))}
+            </div>
           </div>
 
           <div className="field-value">
@@ -1345,6 +1351,12 @@ export default function App() {
                 </div>
               ))}
             </div>
+            <div className="label">Risposta AI (raw)</div>
+            <textarea
+              value={lastAiRaw}
+              readOnly
+              placeholder="Qui vedi la risposta pura restituita dal backend AI."
+            />
           </div>
         </aside>
       </main>

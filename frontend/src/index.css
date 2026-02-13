@@ -227,6 +227,41 @@ body {
   background: #e6eef7;
 }
 
+.field-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.field-card {
+  border: 1px solid #dbe3eb;
+  border-radius: 6px;
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.field-card.active {
+  border-color: #0f172a;
+  background: #f8fbff;
+}
+
+.field-card .field-btn {
+  width: 100%;
+}
+
+.field-card textarea {
+  width: 100%;
+  min-height: 64px;
+  resize: vertical;
+  padding: 6px;
+  border-radius: 6px;
+  border: 1px solid #c9d3dc;
+  font-family: inherit;
+  font-size: 22px;
+}
+
 .field-actions {
   display: flex;
   gap: 8px;
